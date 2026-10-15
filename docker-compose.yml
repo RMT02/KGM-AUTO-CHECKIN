@@ -34,11 +34,16 @@ services:
       WEBUI_PORT: "3000"
       WEBUI_PASSWORD: ${WEBUI_PASSWORD:-}   # 可选访问密码，在 .env 中设置；公网暴露时强烈建议启用
       ACCOUNTS_PASSWORD: ${ACCOUNTS_PASSWORD:-}   # 账号管理模块独立密码；连续 3 次错误锁定 5 分钟
+      # ── 酷狗设备标识（建议固定：频繁更换设备会被风控静默丢弃验证码短信；在 .env 中设置）──
+      KUGOU_API_GUID: ${KUGOU_API_GUID:-}
+      KUGOU_API_MID: ${KUGOU_API_MID:-}
+      KUGOU_API_DEV: ${KUGOU_API_DEV:-}
       # ── 调度 ──
       # 注意：签到的日期/星期计算与容器时区无关，统一按北京时间处理。
       CRON_SCHEDULE: "10 1 * * *"      # 每天北京时间 01:10 签到
       CRON_TIMEZONE: Asia/Shanghai     # 调度器使用的时区
       RUN_ON_STARTUP: "false"          # true：容器启动后立即执行一次签到
+      CHECKIN_CONCURRENCY: ${CHECKIN_CONCURRENCY:-}   # 多账号并行：默认全部账号同时并行；设 N 限 N 路；1 = 逐个串行
       # ── 凭据（二选一）──
       # 方式一（推荐）：在 WebUI 里扫码/手机号登录，凭据自动保存到挂载卷 data/userinfo.json
       # 方式二：直接贴入已有的 USERINFO（与 GitHub Actions 的 Secret 格式一致）

@@ -332,8 +332,8 @@ async function consturctServer(moduleDefs) {
     // 获取 env guid
     const env_guid = isUUIDv4(process.env.KUGOU_API_GUID) ? cryptoMd5(process.env.KUGOU_API_GUID) : process.env.KUGOU_API_GUID;
 
-    // 计算设备 MID（基于 GUID 的衍生标识）
-    const mid = calculateMid(env_guid ?? guid);
+    // 计算设备 MID（基于 GUID 的衍生标识）；KUGOU_API_MID 环境变量可显式覆盖（与上游一致，建议固定纯数字设备 ID）
+    const mid = process.env.KUGOU_API_MID ?? calculateMid(env_guid ?? guid);
 
     // 依次注入各平台标识 Cookie
     ensureCookie('KUGOU_API_PLATFORM', process.env.platform);

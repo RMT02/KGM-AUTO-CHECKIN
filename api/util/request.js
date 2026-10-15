@@ -237,7 +237,30 @@ const createRequest = (options) => {
     } catch (e) {
       // 网络错误或请求异常
       answer.status = 502;
-      answer.body = { status: 0, msg: e };
+      if (e?.response) {
+        // 上游返回了 4xx/5xx：保留响应体（酷狗部分节点会把业务错误包在非 200 状态码里），
+        // msg 改为字符串错误摘要，避免上层出现 [object Object]
+        const data = e.response.data;
+        let upstreamBody = null;
+        try {
+          upstreamBody = typeof data === 'string' ? JSON.parse(data) : data;
+        } catch {
+          upstreamBody = null;
+        }
+        answer.body = {
+          ...(upstreamBody && typeof upstreamBody === 'object' ? upstreamBody : {}),
+          status: 0,
+          msg: e.message,
+        };
+        if (e.response.headers?.['ssa-code']) {
+          const { edt, sid } = generateSimulate(mid, userid, dfid, webglHash);
+          if (edt) answer.body.edt = edt;
+          if (sid) answer.body.sid = sid;
+          answer.body.ssaCode = e.response.headers['ssa-code'];
+        }
+      } else {
+        answer.body = { status: 0, msg: e?.message || String(e) };
+      }
       reject(answer);
     }
   });

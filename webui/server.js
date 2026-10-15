@@ -31,7 +31,7 @@ import { createRequire } from 'node:module'
 
 import { close_api, delay, send, startService, waitForApi } from '../utils/utils.js'
 import { upsertUser, writeUserinfoFile, parseUserinfoJson } from '../utils/userinfo.js'
-import { maskIdentifier } from '../utils/safeLog.js'
+import { maskIdentifier, summarizeResponse } from '../utils/safeLog.js'
 import { printGreen, printMagenta, printRed, printYellow } from '../utils/colorOut.js'
 
 const require = createRequire(import.meta.url)
@@ -445,16 +445,32 @@ app.get('/api/qr/status', wrap(async (req, res) => {
 }))
 
 // ── 手机号登录 ──
+
+/** 把酷狗上游响应转成可读的错误描述（区分业务错误 / 风控 / 网络层异常） */
+function describeUpstreamError(r) {
+  if (r?.ssaCode) return '触发酷狗安全验证（风控），请稍后再试或改用扫码登录'
+  if (r?.error_code != null) {
+    return `${r.data || r.msg || '发送被拒绝'}（error_code ${r.error_code}）`
+  }
+  if (r?.msg && typeof r.msg === 'object') {
+    // request.js 网络层异常时 msg 是 axios 错误对象
+    return `请求酷狗服务失败：${r.msg.message || r.msg.code || '网络异常'}`
+  }
+  return r?.msg || r?.message || `status=${r?.status ?? 'unknown'}`
+}
+
 app.post('/api/phone/send', wrap(async (req, res) => {
   const phone = String(req.body?.phone || '').trim()
   assertPhone(phone)
   const r = await withApi(() => send(`/captcha/sent?mobile=${phone}`, 'GET', {}))
   if (r?.status !== 1) {
-    const err = new Error(`验证码发送失败：${r?.msg || r?.message || `status=${r?.status ?? 'unknown'}`}`)
+    const err = new Error(`验证码发送失败：${describeUpstreamError(r)}`)
     err.status = 502
     throw err
   }
   printGreen(`[webui] 验证码已发送至 ${phone.slice(0, 2)}*******${phone.slice(-2)}`)
+  // 成功响应体也记录（脱敏后），便于短信未送达时诊断上游行为
+  printYellow(`[webui] 发送响应: ${JSON.stringify(summarizeResponse(r))}`)
   res.json({ ok: true })
 }))
 
@@ -481,7 +497,7 @@ app.post('/api/phone/login', wrap(async (req, res) => {
     err.status = 400
     throw err
   }
-  const err = new Error(`登录失败：${r?.msg || r?.message || `status=${r?.status ?? 'unknown'}`}`)
+  const err = new Error(`登录失败：${describeUpstreamError(r)}`)
   err.status = 401
   throw err
 }))

@@ -37,55 +37,44 @@ async function main() {
   let skippedCount = 0
 
   const errorMsg = {}
-  // 通知结果收集
+  // 通知结果收集（并行完成后按账号原始顺序填充）
   const notifyResults = []
   let hasError = false
 
-  try {
-    for (const user of userinfo) {
+  // 单账号完整签到流程：并行时各账号独立执行，账号内部保持原有请求节奏（VIP 领取间隔 30s）
+  async function processAccount(user, index) {
+    const tag = `[#${index + 1}/${userinfo.length}]`
+    const accountErrors = {} // 该账号的错误集（键名含账号标识，账号之间互不冲突，可安全并行写入）
+    try {
       // 手动触发：当日已完成签到（无任何错误）的账号直接跳过，不再请求酷狗 API
       if (skipDone && doneSet.has(String(user.userid))) {
         const safeUserId = maskIdentifier(user.userid)
-        printYellow(`账号 ${safeUserId} 今日已签到，跳过`)
-        notifyResults.push({
-          nickname: safeUserId,
-          status: '跳过',
-          listen: '今日已签到',
-          vipClaim: '-',
-          vipExpiry: '-',
-          error: ''
-        })
+        printYellow(`${tag} 账号 ${safeUserId} 今日已签到，跳过`)
         skippedCount++
-        continue
+        return {
+          nickname: safeUserId, status: '跳过', listen: '今日已签到',
+          vipClaim: '-', vipExpiry: '-', error: ''
+        }
       }
 
-      // 单账号异常隔离：任何一个账号的请求/解析出错，只记录该账号失败，
-      // 不影响其余账号继续执行，也保证后续通知与 secret 刷新一定能触发。
+      // 单账号异常隔离：任何一个账号的请求/解析出错，只记录该账号失败，不影响其余账号继续执行
       try {
-        // 以进入账号时已有的错误数为基准，结束后对比即可知道该账号是否全程无错
-        const errCountBefore = Object.keys(errorMsg).length
         let headers = { 'cookie': 'token=' + user.token + '; userid=' + user.userid }
         const userDetail = await send(`/user/detail?timestrap=${Date.now()}`, "GET", headers)
         if (userDetail?.data?.nickname == null) {
           const safeUserId = maskIdentifier(user.userid)
-          printRed(`token过期或账号不存在, userid: ${safeUserId}`)
-          errorMsg[safeUserId] = {
+          printRed(`${tag} token过期或账号不存在, userid: ${safeUserId}`)
+          accountErrors[safeUserId] = {
             msg: `token过期或账号不存在, userid: ${safeUserId}`,
             data: summarizeResponse(userDetail)
           }
-          notifyResults.push({
-            nickname: safeUserId,
-            status: '失败',
-            listen: '账号不存在',
-            vipClaim: '0/8',
-            vipExpiry: '未知',
-            error: 'token过期或账号不存在'
-          })
-          hasError = true
-          continue
+          return {
+            nickname: safeUserId, status: '失败', listen: '账号不存在',
+            vipClaim: '0/8', vipExpiry: '未知', error: 'token过期或账号不存在'
+          }
         }
         const safeNickname = maskDisplayName(userDetail.data.nickname)
-        printMagenta(`账号 ${safeNickname} 开始领取VIP...`)
+        printMagenta(`${tag} 账号 ${safeNickname} 开始领取VIP...`)
 
         // 周日刷新token
         if (isBeijingSunday(now)) {
@@ -93,7 +82,7 @@ async function main() {
           if (refreshToken?.status == 1) {
             if (refreshToken?.data?.token !== user.token) {
               needRefresh = true
-              printYellow(`账号 ${safeNickname} 需要刷新token`)
+              printYellow(`${tag} 账号 ${safeNickname} 需要刷新token`)
               user.token = refreshToken.data.token
               // 用新 token 重建本次请求的 headers，使后续听歌/VIP 领取使用刷新后的凭证
               headers = { 'cookie': 'token=' + user.token + '; userid=' + user.userid }
@@ -102,43 +91,41 @@ async function main() {
         }
 
         // 开始听歌
-        printYellow(`开始听歌领取VIP...`)
+        printYellow(`${tag} 开始听歌领取VIP...`)
         // 听歌获取vip
         const listen = await send(`/youth/listen/song?timestrap=${Date.now()}`, "GET", headers)
 
         let listenStatus = '未知'
         if (listen.status === 1) {
-          printGreen("听歌领取成功")
+          printGreen(`${tag} 听歌领取成功`)
           listenStatus = '成功'
         } else if (listen.error_code === 130012) {
-          printGreen("今日已领取")
+          printGreen(`${tag} 今日已领取`)
           listenStatus = '今日已领取'
         } else {
-          errorMsg[`${safeNickname} listen`] = summarizeResponse(listen)
-          printRed("听歌领取失败")
+          accountErrors[`${safeNickname} listen`] = summarizeResponse(listen)
+          printRed(`${tag} 听歌领取失败`)
           listenStatus = '失败'
-          hasError = true
         }
 
-        printYellow("开始领取VIP...")
+        printYellow(`${tag} 开始领取VIP...`)
         let claimCount = 0
         let claimTotal = 0
         for (let i = 1; i <= 8; i++) {
           const ad = await send(`/youth/vip?timestrap=${Date.now()}`, "GET", headers)
           claimTotal = i
           if (ad.status === 1) {
-            printGreen(`第${i}次领取成功`)
+            printGreen(`${tag} 第${i}次领取成功`)
             claimCount++
             if (i != 8) {
               await delay(30 * 1000)
             }
           } else if (ad.error_code === 30002) {
-            printGreen("今天次数已用光")
+            printGreen(`${tag} 今天次数已用光`)
             break
           } else {
-            printRed(`第${i}次领取失败`)
-            errorMsg[`${safeNickname} ad`] = summarizeResponse(ad)
-            hasError = true
+            printRed(`${tag} 第${i}次领取失败`)
+            accountErrors[`${safeNickname} ad`] = summarizeResponse(ad)
             break
           }
         }
@@ -147,45 +134,73 @@ async function main() {
         const vip_details = await send(`/user/vip/detail?timestrap=${Date.now()}`, "GET", headers)
         if (vip_details.status === 1 && Array.isArray(vip_details.data?.busi_vip) && vip_details.data.busi_vip.length > 0) {
           vipExpiry = vip_details.data.busi_vip[0].vip_end_time
-          printBlue(`今天是：${date}`)
-          printBlue(`VIP到期时间：${vipExpiry}\n`)
+          printBlue(`${tag} 今天是：${date}`)
+          printBlue(`${tag} VIP到期时间：${vipExpiry}\n`)
         } else {
-          printRed("获取失败\n")
-          errorMsg[`${safeNickname} vip_details`] = summarizeResponse(vip_details)
-          hasError = true
+          printRed(`${tag} 获取失败\n`)
+          accountErrors[`${safeNickname} vip_details`] = summarizeResponse(vip_details)
         }
 
-        notifyResults.push({
+        // 全程无错（含"今日已领取"与"次数已用光"）即视为当日已完成签到，写入状态供手动触发跳过
+        if (Object.keys(accountErrors).length === 0 && stateEnabled) {
+          doneSet.add(String(user.userid))
+        }
+
+        return {
           nickname: safeNickname,
           status: listenStatus === '失败' || claimCount === 0 ? '部分失败' : '成功',
           listen: listenStatus,
           vipClaim: `${claimCount}/${claimTotal}`,
           vipExpiry,
           error: ''
-        })
-
-        // 全程无错（含"今日已领取"与"次数已用光"）即视为当日已完成签到，写入状态供手动触发跳过
-        const accountHadError = Object.keys(errorMsg).length > errCountBefore
-        if (!accountHadError && stateEnabled) {
-          doneSet.add(String(user.userid))
         }
       } catch (err) {
         const safeUserId = maskIdentifier(user.userid || '未知')
-        printRed(`账号 ${safeUserId} 处理异常：${err && err.message ? err.message : String(err)}`)
-        errorMsg[safeUserId] = { msg: '处理异常', error: err && err.message ? err.message : String(err) }
-        notifyResults.push({
-          nickname: safeUserId,
-          status: '失败',
-          listen: '异常',
-          vipClaim: '0/8',
-          vipExpiry: '未知',
+        printRed(`${tag} 账号 ${safeUserId} 处理异常：${err && err.message ? err.message : String(err)}`)
+        accountErrors[safeUserId] = { msg: '处理异常', error: err && err.message ? err.message : String(err) }
+        return {
+          nickname: safeUserId, status: '失败', listen: '异常',
+          vipClaim: '0/8', vipExpiry: '未知',
           error: err && err.message ? err.message : String(err)
-        })
-        hasError = true
-        continue
+        }
       }
+    } finally {
+      // 各账号错误统一合并到全局（键名含账号标识互不冲突），保证"异常信息如下"输出与原有格式一致
+      Object.assign(errorMsg, accountErrors)
+    }
+  }
+
+  try {
+    // 并发数（账号级并行）：默认不限制——有几个账号就几路全部并行；
+    // CHECKIN_CONCURRENCY 可选限流：设 N = 最多 N 路，设 1 = 逐个串行（与旧版行为一致）
+    const rawConcurrency = String(process.env.CHECKIN_CONCURRENCY || '').trim().toLowerCase()
+    let CONCURRENCY
+    if (!rawConcurrency || rawConcurrency === 'max' || rawConcurrency === '0') {
+      CONCURRENCY = userinfo.length
+    } else {
+      const n = parseInt(rawConcurrency, 10)
+      CONCURRENCY = Math.min(Math.max(1, n || 1), Math.max(1, userinfo.length))
+    }
+    if (userinfo.length > 1) {
+      const source = (!rawConcurrency || rawConcurrency === 'max' || rawConcurrency === '0')
+        ? '全部账号同时并行'
+        : `限流 ${CONCURRENCY} 路（CHECKIN_CONCURRENCY，1 为逐个串行）`
+      printYellow(`多账号并行签到：${CONCURRENCY} 个账号同时进行（${source}）`)
     }
 
+    // 工作池：CONCURRENCY 个 worker 从队列取账号执行；results 始终按账号原始顺序排列
+    const results = new Array(userinfo.length)
+    let cursor = 0
+    const worker = async () => {
+      while (cursor < userinfo.length) {
+        const index = cursor++
+        results[index] = await processAccount(userinfo[index], index)
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, userinfo.length) }, worker))
+
+    notifyResults.push(...results)
+    hasError = Object.keys(errorMsg).length > 0
   } finally {
     close_api(api)
   }
